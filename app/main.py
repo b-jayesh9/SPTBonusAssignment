@@ -197,7 +197,7 @@ with tab1:
                 st.markdown("---")
                 st.markdown(
                     """
-                    **Note on Statistical Significance (Traditional View):**
+                    **Note on Statistical Significance:**
                     For context, a traditional statistical significance threshold (at 95% confidence) is a Z-score greater than 1.96 or less than -1.96.
                     These fixed thresholds are typically used when inferring properties of a larger population from a sample.
                     """
