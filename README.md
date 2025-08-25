@@ -34,8 +34,6 @@ docker build -t sql-query-ui .
 
 This command starts the application. On its first launch, it will download the dataset and store it in a persistent volume.
 
-Execute the following command, replacing `"your_username"` and `"your_key"` with your Kaggle API credentials:
-
 ```bash
 docker run --rm -p 8501:8501 \
   -v amz-data:/app/data \

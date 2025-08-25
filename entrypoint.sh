@@ -1,29 +1,37 @@
-# Use an official Python runtime as a parent image
-FROM python:3.12-slim
-LABEL authors="jayesh"
+#!/bin/sh
 
-# Set the working directory in the container
-WORKDIR /app
+# Exit immediately if a command exits with a non-zero status.
+set -e
 
-# Install system dependencies needed for runtime download
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl \
-    unzip \
-    && rm -rf /var/lib/apt/lists/*
+# Define file paths for data management
+DATA_DIR="/app/data"
+DATA_FILE_PATH="${DATA_DIR}/amz_uk_processed_data.csv"
+ZIP_FILE_PATH="${DATA_DIR}/dataset.zip"
 
-# Copy requirements and install Python dependencies
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Ensure the data directory exists
+mkdir -p $DATA_DIR
 
-# Copy the application code into the container
-COPY ./app ./app
+# Check if the data file already exists in the persistent volume.
+if [ ! -f "$DATA_FILE_PATH" ]; then
+    echo "[INFO] Dataset not found at ${DATA_FILE_PATH}."
 
-# Copy the new entrypoint script and make it executable
-COPY entrypoint.sh .
-RUN chmod +x entrypoint.sh
 
-# The entrypoint script will run on container startup
-ENTRYPOINT ["/app/entrypoint.sh"]
+    echo "[INFO] Starting dataset download from Kaggle..."
+    curl -L -o "$ZIP_FILE_PATH" \
+      "https://www.kaggle.com/api/v1/datasets/download/asaniczka/amazon-uk-products-dataset-2023"
 
-# The default command to be executed by the entrypoint script
-CMD ["streamlit", "run", "app/main.py", "--server.port=8501", "--server.address=0.0.0.0"]
+    echo "[INFO] Download complete. Unzipping dataset..."
+    unzip "$ZIP_FILE_PATH" -d "$DATA_DIR"
+
+    echo "[INFO] Unzip complete. Cleaning up archive file..."
+    rm "$ZIP_FILE_PATH"
+
+    echo "[INFO] Dataset preparation is complete."
+else
+    echo "[INFO] Existing dataset found at ${DATA_FILE_PATH}. Re-using it."
+fi
+
+# Execute the command passed into this script (the CMD from the Dockerfile).
+# This will start the Streamlit server.
+echo "[INFO] Starting Streamlit application server."
+exec "$@"

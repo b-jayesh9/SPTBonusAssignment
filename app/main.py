@@ -1,6 +1,14 @@
 import streamlit as st
 import duckdb
 import os
+import logging
+
+# --- Logger Configuration ---
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
 
 # --- Page Configuration ---
 st.set_page_config(
@@ -18,8 +26,10 @@ TABLE_NAME = "products"
 def get_duckdb_connection():
     """Establishes a DuckDB connection and loads the dataset into a table."""
     try:
+        logging.info("Initializing DuckDB connection and loading data...")
         if not os.path.exists(DATA_FILE_PATH):
             st.error(f"Data file not found at the specified path: {DATA_FILE_PATH}.")
+            logging.error(f"Data file not found at {DATA_FILE_PATH}.")
             st.stop()
 
         con = duckdb.connect(database=':memory:', read_only=False)
@@ -29,8 +39,10 @@ def get_duckdb_connection():
                 CAST("stars" AS FLOAT) AS rating
             FROM read_csv_auto('{DATA_FILE_PATH}');
         """)
+        logging.info("DuckDB connection successful and data loaded into table '%s'.", TABLE_NAME)
         return con
     except Exception as e:
+        logging.error("Failed to initialize the database connection.", exc_info=True)
         st.error(f"Failed to initialize the database connection: {e}")
         st.stop()
 
@@ -98,29 +110,23 @@ st.title("Amazon UK Product Data Analysis")
 
 tab1, tab2 = st.tabs(["Automated Analysis", "SQL Explorer"])
 
-# === Automated Analysis Tab ===
 with tab1:
     st.header("Pre-built Analytical Reports")
     st.markdown("Select a report for automated analysis of the dataset.")
-
     analysis_options = {
         "Select a Report": lambda: None,
         "Rating Variability Analysis": perform_variability_analysis,
-        "Statistically Significant Ratings (Z-Score)": perform_zscore_analysis,
+        "Category Performance (Z-Score)": perform_zscore_analysis,  # Changed label for clarity
     }
-
-    selected_analysis = st.selectbox(
-        "Select an analysis to perform:",
-        options=list(analysis_options.keys()),
-        label_visibility="collapsed"
-    )
+    selected_analysis = st.selectbox("Select an analysis:", options=list(analysis_options.keys()),
+                                     label_visibility="collapsed")
 
     if selected_analysis != "Select a Report":
+        logging.info("User selected analysis: '%s'", selected_analysis)
         try:
             with st.spinner("Executing analysis..."):
                 analysis_function = analysis_options[selected_analysis]
                 results_df = analysis_function(con)
-
             st.success("Analysis complete.")
 
             if selected_analysis == "Rating Variability Analysis":
@@ -134,45 +140,94 @@ with tab1:
                 st.dataframe(results_df.sort_values(by="std_dev_rating", ascending=True).head(10),
                              use_container_width=True)
 
-            elif selected_analysis == "Statistically Significant Ratings (Z-Score)":
+            elif selected_analysis == "Category Performance (Z-Score)":
                 st.subheader("Category Ratings vs. Dataset Average (Z-Score Analysis)")
                 st.markdown(
-                    "This analysis identifies categories that perform significantly better or worse than the overall dataset average. The Z-score measures a category's deviation from the mean in terms of standard deviations.")
+                    "This analysis identifies categories whose average rating deviates from the overall dataset average. The Z-score measures a category's deviation from the mean in terms of standard deviations.")
                 st.markdown("---")
                 st.markdown("#### Top Overall Category Rankings (by Z-score)")
                 st.dataframe(results_df.head(10), use_container_width=True)
                 st.markdown("#### Bottom Overall Category Rankings (by Z-score)")
                 st.dataframe(results_df.tail(10).sort_values(by="z_score", ascending=True), use_container_width=True)
                 st.markdown("---")
-                st.markdown("### Statistically Significant Categories")
-                st.markdown("A standard threshold for statistical significance is a Z-score above 1.96 or below -1.96.")
 
-                high_performers = results_df[results_df['z_score'] > 1.96]
-                low_performers = results_df[results_df['z_score'] < -1.96]
+                # --- NEW DYNAMIC THRESHOLD LOGIC ---
+                st.markdown("### Top/Bottom Performing Categories (Relative Z-score)")
+                st.markdown(
+                    """
+                    Instead of a fixed statistical threshold, this section identifies categories whose Z-scores fall into the extreme percentiles of the Z-score distribution.
+                    This provides a data-driven, relative measure of performance compared to other categories in the dataset.
+                    """
+                )
 
-                st.markdown("#### Significant High-Performers (Z-score > 1.96)")
-                if high_performers.empty:
-                    st.info("No categories met the high-performance significance threshold.")
+                # Calculate dynamic thresholds using percentiles
+                # We need to handle potential NaN values in Z-score if there was division by zero
+                # or very little variance.
+                valid_z_scores = results_df['z_score'].dropna()
+
+                if not valid_z_scores.empty:
+                    # Define percentiles for top and bottom (e.g., 90th percentile and 10th percentile)
+                    high_threshold = valid_z_scores.quantile(0.90)
+                    low_threshold = valid_z_scores.quantile(0.10)
+
+                    st.info(
+                        f"Dynamically identified thresholds: Top 10% of categories have Z-score > {high_threshold:.2f}, Bottom 10% have Z-score < {low_threshold:.2f}.")
+
+                    top_performers = results_df[results_df['z_score'] >= high_threshold].sort_values(by='z_score',
+                                                                                                     ascending=False)
+                    bottom_performers = results_df[results_df['z_score'] <= low_threshold].sort_values(by='z_score',
+                                                                                                       ascending=True)
+
+                    st.markdown(f"#### Top Performing Categories (Z-score >= {high_threshold:.2f} - Approx. Top 10%)")
+                    if top_performers.empty:
+                        st.info("No categories met the dynamic high-performance threshold.")
+                    else:
+                        st.dataframe(top_performers, use_container_width=True)
+
+                    st.markdown(
+                        f"#### Bottom Performing Categories (Z-score <= {low_threshold:.2f} - Approx. Bottom 10%)")
+                    if bottom_performers.empty:
+                        st.info("No categories met the dynamic low-performance threshold.")
+                    else:
+                        st.dataframe(bottom_performers, use_container_width=True)
                 else:
-                    st.dataframe(high_performers, use_container_width=True)
+                    st.warning(
+                        "Could not calculate dynamic thresholds: Z-score data is not available or has no variance.")
 
-                st.markdown("#### Significant Low-Performers (Z-score < -1.96)")
-                if low_performers.empty:
-                    st.info("No categories met the low-performance significance threshold.")
+                st.markdown("---")
+                st.markdown(
+                    """
+                    **Note on Statistical Significance (Traditional View):**
+                    For context, a traditional statistical significance threshold (at 95% confidence) is a Z-score greater than 1.96 or less than -1.96.
+                    These fixed thresholds are typically used when inferring properties of a larger population from a sample.
+                    """
+                )
+
+                high_signif_performers = results_df[results_df['z_score'] > 1.96]
+                low_signif_performers = results_df[results_df['z_score'] < -1.96]
+
+                st.markdown("#### Traditional Statistically Significant High-Performers (Z-score > 1.96)")
+                if high_signif_performers.empty:
+                    st.info(
+                        "No categories met the traditional statistical significance threshold for high performance (Z-score > 1.96).")
                 else:
-                    st.dataframe(low_performers.sort_values(by="z_score", ascending=True), use_container_width=True)
+                    st.dataframe(high_signif_performers, use_container_width=True)
+
+                st.markdown("#### Traditional Statistically Significant Low-Performers (Z-score < -1.96)")
+                if low_signif_performers.empty:
+                    st.info(
+                        "No categories met the traditional statistical significance threshold for low performance (Z-score < -1.96).")
+                else:
+                    st.dataframe(low_signif_performers.sort_values(by="z_score", ascending=True),
+                                 use_container_width=True)
 
             csv = results_df.to_csv(index=False).encode('utf-8')
-            st.download_button(
-                label=f"Download Full '{selected_analysis}' Report",
-                data=csv,
-                file_name=f"{selected_analysis.lower().replace(' ', '_')}_report.csv",
-                mime='text/csv',
-            )
+            st.download_button(label=f"Download Full '{selected_analysis}' Report", data=csv,
+                               file_name=f"{selected_analysis.lower().replace(' ', '_')}_report.csv", mime='text/csv')
         except Exception as e:
+            logging.error("An error occurred during analysis: %s", selected_analysis, exc_info=True)
             st.error(f"An error occurred during the analysis: {e}")
 
-# === SQL Explorer Tab ===
 with tab2:
     st.header("Interactive SQL Query Editor")
     st.info(
@@ -181,6 +236,7 @@ with tab2:
     query_text = st.text_area("SQL Query:", value=default_query, height=300, label_visibility="collapsed")
     if st.button("Execute Query"):
         if query_text:
+            logging.info("Executing user-provided SQL query.")
             try:
                 with st.spinner("Executing query..."):
                     results_df = con.execute(query_text).fetchdf()
@@ -190,6 +246,7 @@ with tab2:
                 st.download_button(label="Download Results as CSV", data=csv, file_name='query_results.csv',
                                    mime='text/csv')
             except Exception as e:
+                logging.error("An error occurred during query execution.", exc_info=True)
                 st.error(f"An error occurred during query execution: {e}")
         else:
             st.warning("Please enter a SQL query to execute.")
